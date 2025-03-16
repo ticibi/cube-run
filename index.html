@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Dino Jump – Debug God Mode with Enhancements</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+    }
+    canvas { display: block; }
+    #gameOverScreen {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.7);
+      color: #fff;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      font-family: sans-serif;
+      z-index: 10;
+    }
+    #gameOverScreen button {
+      font-size: 1.2em;
+      padding: 10px 20px;
+      margin-top: 20px;
+      cursor: pointer;
+      background: #444;
+      color: #fff;
+      border: none;
+      border-radius: 5px;
+    }
+    #gameOverScreen button:hover {
+      background: #666;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+  <div id="gameOverScreen">
+    <h1 id="gameOverText">Game Over</h1>
+    <p id="finalScore"></p>
+    <p id="highScoreDisplay"></p>
+    <p id="finalCoins"></p> <!-- Added for coins -->
+    <button onclick="restartGame()">Restart</button>
+  </div>
+  <script>
+    /* ==============================
+         GLOBAL VARIABLES & SETUP
+       ============================== */
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    let cw = canvas.width = window.innerWidth;
+    let ch = canvas.height = window.innerHeight;
+
+    window.addEventListener("resize", () => {
+      cw = canvas.width = window.innerWidth;
+      ch = canvas.height = window.innerHeight;
+      groundY = ch * 0.8;
+    });
+
+    let gameSpeed = 6;
+    let score = 0;
+    let coins = 0; // New coin counter
+    let highScore = localStorage.getItem("dinoHighScore") || 0;
+    let frameCount = 0;
+    let gameOver = false;
+    let bonusAwarded = false;
+    let bonusText = "";
+    let bonusTextTimer = 0;
+    let invincible = false;
+    let invincibleTimer = 0;
+    let godMode = false;
+    let autoPlay = false; // New auto-play flag
+    let groundY = ch * 0.8;
+    let timeOfDay = 0;
+
+    const stars = [];
+    const numStars = 60;
+    for (let i = 0; i < numStars; i++) {
+      stars.push({
+        x: Math.random() * cw,
+        y: Math.random() * ch * 0.5,
+        radius: Math.random() * 1.5 + 0.5
+      });
+    }
+
+    // Sound Effects
+    const jumpSound = new Audio("jump.mp3");
+    const landSound = new Audio("land.mp3");
+    const collisionSound = new Audio("crash.mp3");
+    const powerUpSound = new Audio("powerup.mp3");
+    const powerUpDurationSound = new Audio("powerup_duration.mp3");
+    const coinSound = new Audio("coin.mp3");
+
+    /* ==============================
+         UTILITY FUNCTIONS
+       ============================== */
+    function lerp(a, b, t) { return a + (b - a) * t; }
+    function smoothstep(t) { return t * t * (3 - 2 * t); }
+
+    /* ==============================
+         SKY & MOON/SUN FUNCTIONS
+       ============================== */
+    const keyFrames = [
+      { t: 0,    top: { h:240, s:70, l:20 }, bottom: { h:240, s:70, l:10 } },
+      { t: 0.25, top: { h:30,  s:80, l:70 }, bottom: { h:30,  s:80, l:90 } },
+      { t: 0.5,  top: { h:200, s:70, l:80 }, bottom: { h:200, s:70, l:95 } },
+      { t: 0.75, top: { h:30,  s:80, l:70 }, bottom: { h:30,  s:80, l:90 } },
+      { t: 1,    top: { h:240, s:70, l:20 }, bottom: { h:240, s:70, l:10 } }
+    ];
+
+    function interpHSL(a, b, t) {
+      return {
+        h: lerp(a.h, b.h, t),
+        s: lerp(a.s, b.s, t),
+        l: lerp(a.l, b.l, t)
+      };
+    }
+
+    function getSkyGradient(t) {
+      let start, end, interval;
+      for (let i = 0; i < keyFrames.length - 1; i++) {
+        if (t >= keyFrames[i].t && t <= keyFrames[i + 1].t) {
+          start = keyFrames[i];
+          end = keyFrames[i + 1];
+          interval = end.t - start.t;
+          break;
+        }
+      }
+      let localT = (t - start.t) / interval;
+      localT = smoothstep(localT);
+      let topColor = interpHSL(start.top, end.top, localT);
+      let bottomColor = interpHSL(start.bottom, end.bottom, localT);
+      return {
+        top: `hsl(${topColor.h}, ${topColor.s}%, ${topColor.l}%)`,
+        bottom: `hsl(${bottomColor.h}, ${bottomColor.s}%, ${bottomColor.l}%)`
+      };
+    }
+
+    function drawSun(t) {
+      let normalized = (t - 0.25) / 0.5;
+      let sunX = cw * (1 - normalized);
+      let sunY = ch * 0.2 - Math.sin(normalized * Math.PI) * 50;
+      ctx.fillStyle = "yellow";
+      ctx.beginPath();
+      ctx.arc(sunX, sunY, 40, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      ctx.fillStyle = "yellow";
+      ctx.beginPath();
+      ctx.arc(sunX, sunY, 60, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawMoon(t) {
+      let normalized = (t < 0.25) ? (t / 0.25) : ((t - 0.75) / 0.25);
+      let moonX = cw * (1 - normalized);
+      let moonY = ch * 0.2 - Math.sin(normalized * Math.PI) * 50;
+      ctx.fillStyle = "#F0E68C";
+      ctx.beginPath();
+      ctx.arc(moonX, moonY, 30, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      ctx.fillStyle = "#F0E68C";
+      ctx.beginPath();
+      ctx.arc(moonX, moonY, 45, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      drawStars();
+    }
+
+    function drawStars() {
+      ctx.fillStyle = "white";
+      stars.forEach(star => {
+        let twinkle = star.radius * (0.8 + 0.2 * Math.sin(frameCount / 20 + star.x));
+        ctx.beginPath();
+        ctx.arc(star.x, star.y, twinkle, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+
+    /* ==============================
+         GAME OBJECTS
+       ============================== */
+    const dino = {
+      x: 500,
+      y: groundY - 50,
+      width: 44,
+      height: 50,
+      vy: 0,
+      gravity: 0.8,
+      jumpForce: 18,
+      isJumping: false,
+      draw: function() {
+        ctx.save();
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = "#3498db";
+        ctx.fillStyle = invincible ? "#85c1e9" : "#3498db";
+        ctx.fillRect(this.x, this.y, this.width, this.height);
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(this.x + this.width - 10, this.y + 10, 8, 8);
+        ctx.restore();
+      },
+      update: function() {
+        this.y += this.vy;
+        if (this.y + this.height < groundY) {
+          this.vy += this.gravity;
+          this.isJumping = true;
+        } else {
+          this.y = groundY - this.height;
+          if (this.vy > 0 && this.isJumping) {
+            landSound.play(); // Play landing sound
+          }
+          this.vy = 0;
+          this.isJumping = false;
+        }
+        this.draw();
+      },
+      jump: function() {
+        if (!this.isJumping) {
+          this.vy = -this.jumpForce;
+          jumpSound.play(); // Play jump sound
+          for (let i = 0; i < 5; i++) {
+            particles.push(new Particle(this.x + this.width / 2, this.y + this.height, "rgba(0,0,0,0.2)"));
+          }
+        }
+      }
+    };
+
+    class Obstacle {
+      constructor(type) {
+        this.type = type;
+        this.markedForDeletion = false;
+        if (type === "cactus") {
+          this.width = 25;
+          this.height = 50;
+          this.y = groundY - this.height;
+          this.baseColor = "#228B22";
+        } else if (type === "bird") {
+          this.width = 40;
+          this.height = 30;
+          this.y = groundY - 100 - Math.random() * 50;
+          this.baseColor = "#666";
+        }
+        this.x = cw;
+      }
+      draw() {
+        let color = ((timeOfDay < 0.25 || timeOfDay > 0.75) ? "#444" : this.baseColor);
+        ctx.fillStyle = color;
+        if (this.type === "cactus") {
+          ctx.fillRect(this.x, this.y, this.width, this.height);
+          ctx.fillRect(this.x - 5, this.y + 10, 5, 20);
+        } else if (this.type === "bird") {
+          ctx.beginPath();
+          ctx.ellipse(this.x + this.width / 2, this.y + this.height / 2, this.width / 2, this.height / 2, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      update() {
+        this.x -= gameSpeed;
+        if (this.x + this.width < 0) this.markedForDeletion = true;
+        this.draw();
+      }
+    }
+
+    class PowerUp {
+      constructor() {
+        this.size = 20;
+        this.x = cw;
+        this.y = groundY - 150 - Math.random() * 50;
+        this.baseColor = "#FF69B4";
+        this.markedForDeletion = false;
+      }
+      draw() {
+        ctx.fillStyle = this.baseColor;
+        ctx.beginPath();
+        ctx.arc(this.x + this.size / 2, this.y + this.size / 2, this.size / 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      update() {
+        this.x -= gameSpeed;
+        if (this.x + this.size < 0) this.markedForDeletion = true;
+        this.draw();
+      }
+    }
+
+    class Coin {
+      constructor() {
+        this.size = 15;
+        this.x = cw;
+        this.y = groundY - 100 - Math.random() * 100;
+        this.baseColor = "#FFD700";
+        this.markedForDeletion = false;
+      }
+      draw() {
+        ctx.fillStyle = this.baseColor;
+        ctx.beginPath();
+        ctx.arc(this.x + this.size / 2, this.y + this.size / 2, this.size / 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      update() {
+        this.x -= gameSpeed;
+        if (this.x + this.size < 0) this.markedForDeletion = true;
+        this.draw();
+      }
+    }
+
+    class Particle {
+      constructor(x, y, color) {
+        this.x = x;
+        this.y = y;
+        this.radius = Math.random() * 3 + 1;
+        this.color = color;
+        this.vx = Math.random() * 2 - 1;
+        this.vy = Math.random() * -2 - 1;
+        this.alpha = 1;
+      }
+      update() {
+        this.x += this.vx;
+        this.y += this.vy;
+        this.alpha -= 0.02;
+      }
+      draw() {
+        ctx.save();
+        ctx.globalAlpha = this.alpha;
+        ctx.fillStyle = this.color;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    class Cloud {
+      constructor() {
+        this.x = cw + Math.random() * cw;
+        this.y = Math.random() * ch * 0.4;
+        this.radius = Math.random() * 20 + 20;
+        this.speed = gameSpeed * 0.2;
+      }
+      update() {
+        this.x -= this.speed;
+        if (this.x + this.radius * 2 < 0) {
+          this.x = cw;
+          this.y = Math.random() * ch * 0.4;
+        }
+        this.draw();
+      }
+      draw() {
+        ctx.fillStyle = "rgba(255,255,255,0.8)";
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+        ctx.arc(this.x + this.radius, this.y + 10, this.radius * 0.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    /* ==============================
+         GAME ARRAYS
+       ============================== */
+    let obstacles = [];
+    let powerUps = [];
+    let coinsArray = []; // New coins array
+    let particles = [];
+    let clouds = [];
+    for (let i = 0; i < 5; i++) {
+      clouds.push(new Cloud());
+    }
+
+    /* ==============================
+         INPUT HANDLING
+       ============================== */
+    document.addEventListener("keydown", (e) => {
+      if (e.code === "Space" && !gameOver && !autoPlay) {
+        dino.jump();
+      }
+      if (e.code === "KeyG") {
+        godMode = !godMode;
+        console.log("God Mode:", godMode);
+      }
+      if (e.code === "KeyO") { // Toggle auto-play with 'O'
+        autoPlay = !autoPlay;
+        console.log("Auto Play:", autoPlay);
+      }
+    });
+    canvas.addEventListener("mousedown", () => {
+      if (!gameOver && !autoPlay) dino.jump();
+    });
+
+    /* ==============================
+         AUTO-PLAY LOGIC
+       ============================== */
+    function autoPlayLogic() {
+      if (!autoPlay || gameOver) return;
+
+      let closestThreat = null;
+      let closestPowerUp = null;
+      let closestCoin = null;
+      let minThreatDist = Infinity;
+      let minPowerUpDist = Infinity;
+      let minCoinDist = Infinity;
+
+      obstacles.forEach(obs => {
+        let dist = obs.x - (dino.x + dino.width);
+        if (dist > 0 && dist < minThreatDist) {
+          minThreatDist = dist;
+          closestThreat = obs;
+        }
+      });
+
+      powerUps.forEach(pwr => {
+        let dist = pwr.x - (dino.x + dino.width);
+        if (dist > 0 && dist < minPowerUpDist) {
+          minPowerUpDist = dist;
+          closestPowerUp = pwr;
+        }
+      });
+
+      coinsArray.forEach(coin => {
+        let dist = coin.x - (dino.x + dino.width);
+        if (dist > 0 && dist < minCoinDist) {
+          minCoinDist = dist;
+          closestCoin = coin;
+        }
+      });
+
+      if (closestThreat && minThreatDist < 150) {
+        if (closestThreat.type === "bird" && dino.y + dino.height > closestThreat.y) {
+          // Stay on ground for bird (could add ducking later)
+        } else if (closestThreat.type === "cactus" && !dino.isJumping) {
+          dino.jump();
+        }
+      }
+
+      if (closestPowerUp && minPowerUpDist < 200 && !dino.isJumping) {
+        if (dino.y + dino.height < closestPowerUp.y + closestPowerUp.size) {
+          dino.jump();
+        }
+      }
+
+      if (closestCoin && minCoinDist < 200 && !dino.isJumping) {
+        if (dino.y + dino.height < closestCoin.y + closestCoin.size) {
+          dino.jump();
+        }
+      }
+    }
+
+    /* ==============================
+         MAIN GAME LOOP
+       ============================== */
+    function update() {
+      if (gameOver) return;
+      frameCount++;
+      timeOfDay = (frameCount / 12000) % 1;
+
+      score += 0.1;
+      gameSpeed = 6 + score / 100;
+
+      let skyColors = getSkyGradient(timeOfDay);
+      let skyGrad = ctx.createLinearGradient(0, 0, 0, ch);
+      skyGrad.addColorStop(0, skyColors.top);
+      skyGrad.addColorStop(1, skyColors.bottom);
+      ctx.fillStyle = skyGrad;
+      ctx.fillRect(0, 0, cw, ch);
+
+      if (timeOfDay >= 0.25 && timeOfDay <= 0.75) {
+        drawSun(timeOfDay);
+      } else {
+        drawMoon(timeOfDay);
+      }
+
+      clouds.forEach(cloud => cloud.update());
+      ctx.fillStyle = "#777";
+      ctx.fillRect(0, groundY, cw, ch - groundY);
+
+      autoPlayLogic(); // Run auto-play logic
+      dino.update();
+
+      if (frameCount % 90 === 0) {
+        let type = Math.random() < 0.7 ? "cactus" : "bird";
+        obstacles.push(new Obstacle(type));
+      }
+      if (frameCount % 800 === 0) {
+        powerUps.push(new PowerUp());
+      }
+      if (frameCount % 150 === 0) { // Spawn coins
+        coinsArray.push(new Coin());
+      }
+
+      obstacles.forEach((obs, i) => {
+        obs.update();
+        if (
+          dino.x < obs.x + obs.width &&
+          dino.x + dino.width > obs.x &&
+          dino.y < obs.y + obs.height &&
+          dino.y + dino.height > obs.y
+        ) {
+          if (!invincible && !godMode) {
+            collisionSound.play(); // Play collision sound
+            endGame();
+          }
+        }
+        if (obs.markedForDeletion) obstacles.splice(i, 1);
+      });
+
+      powerUps.forEach((pwr, i) => {
+        pwr.update();
+        if (
+          dino.x < pwr.x + pwr.size &&
+          dino.x + dino.width > pwr.x &&
+          dino.y < pwr.y + pwr.size &&
+          dino.y + dino.height > pwr.y
+        ) {
+          invincible = true;
+          invincibleTimer = 180;
+          powerUpSound.play(); // Play power-up sound
+          powerUpDurationSound.loop = true;
+          powerUpDurationSound.play(); // Start duration sound
+          powerUps.splice(i, 1);
+          for (let i = 0; i < 20; i++) {
+            particles.push(new Particle(dino.x + dino.width / 2, dino.y, "rgba(255,215,0,0.8)"));
+          }
+        }
+        if (pwr.markedForDeletion) powerUps.splice(i, 1);
+      });
+
+      coinsArray.forEach((coin, i) => {
+        coin.update();
+        if (
+          dino.x < coin.x + coin.size &&
+          dino.x + dino.width > coin.x &&
+          dino.y < coin.y + coin.size &&
+          dino.y + dino.height > coin.y
+        ) {
+          coins++;
+          coinSound.play(); // Play coin sound
+          coinsArray.splice(i, 1);
+          for (let i = 0; i < 10; i++) {
+            particles.push(new Particle(coin.x + coin.size / 2, coin.y + coin.size / 2, "rgba(255,215,0,0.8)"));
+          }
+        }
+        if (coin.markedForDeletion) coinsArray.splice(i, 1);
+      });
+
+      particles.forEach((p, i) => {
+        p.update();
+        p.draw();
+        if (p.alpha <= 0) particles.splice(i, 1);
+      });
+
+      if (invincible) {
+        invincibleTimer--;
+        if (invincibleTimer <= 0) {
+          invincible = false;
+          powerUpDurationSound.pause(); // Stop duration sound
+          powerUpDurationSound.currentTime = 0;
+        }
+      }
+
+      if (Math.floor(score) % 1000 === 0 && Math.floor(score) !== 0 && !bonusAwarded) {
+        score += 100;
+        bonusAwarded = true;
+        bonusText = "BONUS +100!";
+        bonusTextTimer = 120;
+      }
+      if (Math.floor(score) % 1000 !== 0) {
+        bonusAwarded = false;
+      }
+
+      ctx.fillStyle = "#333";
+      ctx.font = "24px sans-serif";
+      ctx.fillText("Score: " + Math.floor(score), 20, 40);
+      ctx.fillText("High Score: " + Math.floor(highScore), 20, 70);
+      ctx.fillText("Coins: " + coins, 20, 100); // Display coins
+      if (invincible) {
+        ctx.fillStyle = "#FFD700";
+        ctx.fillText("INVINCIBLE", 20, 130);
+      }
+      if (godMode) {
+        ctx.fillStyle = "#FF4500";
+        ctx.fillText("GOD MODE", 20, 160);
+      }
+      if (autoPlay) {
+        ctx.fillStyle = "#00FF00";
+        ctx.fillText("AUTO PLAY", 20, 190);
+      }
+
+      if (bonusTextTimer > 0) {
+        ctx.fillStyle = "rgba(255, 0, 0, " + (bonusTextTimer / 120) + ")";
+        ctx.font = "32px sans-serif";
+        let txtWidth = ctx.measureText(bonusText).width;
+        ctx.fillText(bonusText, cw / 2 - txtWidth / 2, 100);
+        bonusTextTimer--;
+      }
+
+      requestAnimationFrame(update);
+    }
+
+    function endGame() {
+      gameOver = true;
+      if (score > highScore) {
+        highScore = score;
+        localStorage.setItem("dinoHighScore", highScore);
+      }
+      document.getElementById("finalScore").innerText = "Score: " + Math.floor(score);
+      document.getElementById("highScoreDisplay").innerText = "High Score: " + Math.floor(highScore);
+      document.getElementById("finalCoins").innerText = "Coins: " + coins; // Show final coins
+      document.getElementById("gameOverScreen").style.display = "flex";
+      powerUpDurationSound.pause(); // Ensure duration sound stops
+      powerUpDurationSound.currentTime = 0;
+    }
+
+    function restartGame() {
+      obstacles = [];
+      powerUps = [];
+      coinsArray = [];
+      particles = [];
+      score = 0;
+      coins = 0; // Reset coins
+      gameSpeed = 6;
+      frameCount = 0;
+      gameOver = false;
+      invincible = false;
+      autoPlay = false; // Reset auto-play
+      document.getElementById("gameOverScreen").style.display = "none";
+      update();
+    }
+
+    update();
+  </script>
+</body>
+</html>
